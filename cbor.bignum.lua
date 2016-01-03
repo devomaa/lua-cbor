@@ -13,14 +13,13 @@ local function bignum_to_cbor(n)
 		n = big_negatives_one - n;
 	end
 	local as_binary = n:tobin();
-	return cbor.encoder.table(cbor.tagged(2, as_binary));
+	return cbor.type_encoders.table(cbor.tagged(tag, as_binary));
 end
 
 bignum.interpose("__tocbor", bignum_to_cbor);
 
 local function tagged2_to_bignum(value)
 	local n = bignum.new(0);
-	local value = value;
 	for i = 1, #value do
 		n = n * Ox100; -- << 8
 		n = n + value:byte(i);

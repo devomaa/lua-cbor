@@ -1,16 +1,16 @@
 -- This file was automatically generated for the LuaDist project.
 
 package = "lua-cbor"
-version = "0.1-1"
+version = "0.2-1"
 -- LuaDist source
 source = {
   url = "git://github.com/LuaDist2/lua-cbor.git",
-  tag = "0.1-1"
+  tag = "0.2-1"
 }
 -- Original source
 -- source = {
 -- 	url = "hg+http://code.zash.se/lua-cbor/",
--- 	tag = "766b4a773118",
+-- 	tag = "8a300a80e694",
 -- }
 description = {
 	summary = "Pure Lua CBOR / RFC 7049 implementation",
