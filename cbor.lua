@@ -1,7 +1,5 @@
 -- Concise Binary Object Representation (CBOR)
 -- RFC 7049
---
--- luacheck: ignore unused argument self
 
 local function softreq(pkg, field)
 	local ok, mod = pcall(require, pkg);
@@ -10,31 +8,39 @@ local function softreq(pkg, field)
 	return mod;
 end
 local dostring = function (s)
-	local ok, f = pcall(loadstring or load, s);
+	local ok, f = pcall(loadstring or load, s); -- luacheck: read globals loadstring
 	if ok then return f(); end
 end
 
 local setmetatable = setmetatable;
 local getmetatable = getmetatable;
+local dbg_getmetatable = debug.getmetatable;
+local assert = assert;
 local error = error;
 local type = type;
 local pairs = pairs;
+local ipairs = ipairs;
+local tostring = tostring;
 local s_char = string.char;
 local t_concat = table.concat;
+local t_sort = table.sort;
 local m_floor = math.floor;
 local m_abs = math.abs;
 local m_huge = math.huge;
 local m_max = math.max;
 local maxint = math.maxinteger or 9007199254740992;
 local minint = math.mininteger or -9007199254740992;
+local NaN = 0/0;
 local m_frexp = math.frexp;
-local m_ldexp = math.ldexp;
+local m_ldexp = math.ldexp or function(x, exp) return x * 2.0^exp; end;
 local m_type = math.type or function (n) return n % 1 == 0 and n <= maxint and n >= minint and "integer" or "float" end;
 local s_pack = string.pack or softreq("struct", "pack");
 local s_unpack = string.unpack or softreq("struct", "unpack");
 local b_rshift = softreq("bit32", "rshift") or softreq("bit", "rshift") or
 	dostring"return function(a,b) return a>>b end" or
 	function (a, b) return m_max(0, m_floor(a / (2^b))); end;
+
+local _ENV = nil; -- luacheck: ignore 211
 
 local encoder = {};
 
@@ -132,20 +138,20 @@ end
 
 -- Major type 7
 function encoder.float(num)
-	local sign = (num > 0 or 1 / num > 0) and 0 or 1
-	if num ~= num then
+	if num ~= num then -- NaN shortcut
 		return "\251\127\255\255\255\255\255\255\255";
 	end
+	local sign = (num > 0 or 1 / num > 0) and 0 or 1
 	num = m_abs(num)
 	if num == m_huge then
-		return s_char(251, sign * 2^7 + 2^7 - 1) .. "\240\0\0\0\0\0\0";
+		return s_char(251, sign * 128 + 128 - 1) .. "\240\0\0\0\0\0\0";
 	end
 	local fraction, exponent = m_frexp(num)
 	if fraction == 0 then
-		return s_char(251, sign * 2^7) .. "\0\0\0\0\0\0\0";
+		return s_char(251, sign * 128) .. "\0\0\0\0\0\0\0";
 	end
 	fraction = fraction * 2
-	exponent = exponent + 2^10 - 2
+	exponent = exponent + 1024 - 2
 	if exponent <= 0 then
 		fraction = fraction * 2 ^ (exponent - 1)
 		exponent = 0
@@ -167,7 +173,7 @@ end
 
 if s_pack then
 	function encoder.float(num)
-		return s_pack(">bd", 251, num);
+		return s_pack(">Bd", 251, num);
 	end
 end
 
@@ -184,7 +190,7 @@ end
 encoder["nil"] = function() return "\246"; end
 
 function encoder.userdata(ud)
-	local mt = debug.getmetatable(ud);
+	local mt = dbg_getmetatable(ud);
 	if mt and mt.__tocbor then
 		return mt.__tocbor(ud);
 	end
@@ -223,14 +229,14 @@ end
 
 -- Array or dict-only encoders, which can be set as __tocbor metamethod
 function encoder.array(t)
-	local array = { integer(#t, 128) };
-	for i = 1, #t do
-		array[i] = encode(t[i]);
+	local array = { };
+	for i, v in ipairs(t) do
+		array[i] = encode(v);
 	end
-	return t_concat(array);
+	return integer(#array, 128) .. t_concat(array);
 end
 
-function encoder.dict(t)
+function encoder.map(t)
 	local map, p, len = { "\191" }, 2, 0;
 	for k, v in pairs(t) do
 		map[p], p = encode(k), p + 1;
@@ -240,6 +246,23 @@ function encoder.dict(t)
 	-- map[p] = "\255";
 	map[1] = integer(len, 160);
 	return t_concat(map);
+end
+encoder.dict = encoder.map; -- COMPAT
+
+function encoder.ordered_map(t)
+	local map = {};
+	if not t[1] then -- no predefined order
+		local i = 0;
+		for k in pairs(t) do
+			i = i + 1;
+			map[i] = k;
+		end
+		t_sort(map);
+	end
+	for i, k in ipairs(t[1] and t or map) do
+		map[i] = encode(k) .. encode(t[k]);
+	end
+	return integer(#map, 160) .. t_concat(map);
 end
 
 encoder["function"] = function()
@@ -274,7 +297,7 @@ local decoder = {};
 
 local function read_type(fh)
 	local byte = read_byte(fh);
-	return b_rshift(byte, 5), byte % 2^5;
+	return b_rshift(byte, 5), byte % 32;
 end
 
 local function read_object(fh)
@@ -372,13 +395,13 @@ local function read_half_float(fh)
 	exponent = b_rshift(exponent, 2) % 32; -- remove sign bit and two low bits from fraction;
 
 	if exponent == 0 then
-		return sign * m_ldexp(exponent, -24);
+		return sign * m_ldexp(fraction, -24);
 	elseif exponent ~= 31 then
 		return sign * m_ldexp(fraction + 1024, exponent - 25);
 	elseif fraction == 0 then
 		return sign * m_huge;
 	else
-		return sign == 1 and 0/0 or m_abs(0/0);
+		return NaN;
 	end
 end
 
@@ -398,7 +421,7 @@ local function read_float(fh)
 	elseif fraction == 0 then
 		return sign * m_huge;
 	else
-		return sign == 1 and 0/0 or m_abs(0/0);
+		return NaN;
 	end
 end
 
@@ -423,7 +446,7 @@ local function read_double(fh)
 	elseif fraction == 0 then
 		return sign * m_huge;
 	else
-		return sign == 1 and 0/0 or m_abs(0/0);
+		return NaN;
 	end
 end
 
@@ -489,7 +512,7 @@ local function decode(s, more)
 		return ret;
 	end
 
-	function fh:write(bytes)
+	function fh:write(bytes) -- luacheck: no self
 		s = s .. bytes;
 		if pos > 256 then
 			s = s:sub(pos+1);
